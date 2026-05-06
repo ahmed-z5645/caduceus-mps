@@ -1,7 +1,4 @@
-<p align="center">
-    <img src="assets/Caduceus_image.png" alt="Caduceus" width="200"/>
-</p>
-
+Adding Apple Silicon Support to run caduceus locally!
 
 # Caduceus &#9764;: Bi-Directional Equivariant Long-Range DNA Sequence Modeling
 [[Blog]](https://caduceus-dna.github.io/) &nbsp; | &nbsp; [[arXiv]](https://arxiv.org/abs/2403.03234) &nbsp; | &nbsp; [[HuggingFace 🤗]](https://huggingface.co/collections/kuleshov-group/caducues-65dcb89b4f54e416ef61c350)
