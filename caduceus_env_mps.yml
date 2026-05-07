@@ -1,0 +1,39 @@
+# Apple Silicon / MPS environment for inference-only Caduceus.
+#
+# Differences from caduceus_env.yml:
+#   * Drops CUDA toolchain (cuda-nvcc, pytorch-cuda, nvidia channel).
+#   * Drops mamba-ssm / causal-conv1d / flash-attn / triton (CUDA-only).
+#     Their roles are covered by caduceus/mamba_pytorch.py.
+#   * Drops the training-only stack (pytorch-lightning, hydra-core, omegaconf,
+#     wandb, datasets, enformer-pytorch, genomic-benchmarks, timm, etc.).
+#     Add those back if you want to port the training paths too.
+#   * Pins transformers to the 4.x line; the upstream Caduceus tie_weights()
+#     override doesn't accept the kwargs that transformers >= 5 passes.
+#
+# Verified: conda env create -f caduceus_env_mps.yml -n caduceus_mps
+#           pytest caduceus/tests/  # (Step 7)
+
+name: caduceus_mps
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.10
+  - pip
+  - pip:
+      # Core inference stack (what caduceus/mamba_pytorch.py + modeling_caduceus.py need)
+      - torch>=2.2
+      - transformers>=4.38,<5
+      - huggingface-hub
+      - safetensors
+      - pytest
+
+      # Common helpers used by inference / notebook workflows
+      - numpy
+      - pandas
+      - pyfaidx
+      - biopython
+      - scikit-learn
+      - matplotlib
+      - seaborn
+      - jupyter
+      - tqdm

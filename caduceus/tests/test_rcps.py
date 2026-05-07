@@ -7,13 +7,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-try:  # Legacy mambav1 file structure
-    from mamba_ssm.ops.triton.layernorm import RMSNorm, layer_norm_fn, rms_norm_fn
-except ImportError:
-    try:  # mambav2 file structure
-        from mamba_ssm.ops.triton.layer_norm import RMSNorm, layer_norm_fn, rms_norm_fn
-    except ImportError:
-        RMSNorm, layer_norm_fn, rms_norm_fn = None, None, None
+from caduceus.mamba_pytorch import RMSNorm, layer_norm_fn, rms_norm_fn
 
 from caduceus.modeling_rcps import (
     RCPSEmbedding, RCPSAddNormWrapper, RCPSLMHead, RCPSWrapper
@@ -22,6 +16,15 @@ from caduceus.modeling_rcps import (
 from caduceus.modeling_caduceus import (
     CaduceusConfig, CaduceusMixerModel, CaduceusForMaskedLM, create_block
 )
+
+
+def _device():
+    """Pick MPS if available, else CPU. Tests run at fp32 only on this build:
+    the CUDA Triton fused-norm kernels are gone, and MPS bf16/fp16 support is
+    incomplete enough to make tolerance-based RC-equivariance checks brittle."""
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
 
 
 @pytest.mark.parametrize("batch_size", [4])
@@ -76,10 +79,10 @@ def test_rcps_embedding(batch_size, seq_len, d_model, dtype):
 @pytest.mark.parametrize("batch_size", [2])
 @pytest.mark.parametrize("seq_len", [1024])
 @pytest.mark.parametrize("d_model", [128])
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+@pytest.mark.parametrize("dtype", [torch.float32])
 def test_rcps_wrapper(batch_size, seq_len, d_model, dtype):
     # Set tolerance
-    device = torch.device("cuda")
+    device = _device()
     rtol, atol = (6e-4, 2e-3) if dtype == torch.float32 else (3e-3, 5e-3)
     if dtype == torch.bfloat16:
         rtol, atol = 3e-2, 5e-2
@@ -112,10 +115,10 @@ def test_rcps_wrapper(batch_size, seq_len, d_model, dtype):
 @pytest.mark.parametrize("seq_len", [1024])
 @pytest.mark.parametrize("d_model", [128])
 @pytest.mark.parametrize("prenorm", [False, True])
-@pytest.mark.parametrize("dtype", [torch.float16])
+@pytest.mark.parametrize("dtype", [torch.float32])
 def test_rcps_add_norm_wrapper(batch_size, seq_len, d_model, prenorm, dtype):
     # Set tolerance
-    device = torch.device("cuda")
+    device = _device()
     rtol, atol = (6e-4, 2e-3) if dtype == torch.float32 else (3e-3, 5e-3)
     if dtype == torch.bfloat16:
         rtol, atol = 3e-2, 5e-2
@@ -150,11 +153,11 @@ def test_rcps_add_norm_wrapper(batch_size, seq_len, d_model, prenorm, dtype):
 @pytest.mark.parametrize("seq_len", [1024])
 @pytest.mark.parametrize("d_model", [128])
 @pytest.mark.parametrize("bidirectional", [True, False])
-@pytest.mark.parametrize("fused_add_norm", [True, False])
-@pytest.mark.parametrize("dtype", [torch.float16])
+@pytest.mark.parametrize("fused_add_norm", [False])
+@pytest.mark.parametrize("dtype", [torch.float32])
 def test_rcps_mamba_block_wrapper(batch_size, seq_len, d_model, bidirectional, fused_add_norm, dtype):
     # Set tolerance
-    device = torch.device("cuda")
+    device = _device()
     rtol, atol = (6e-4, 2e-3) if dtype == torch.float32 else (3e-3, 5e-3)
     if dtype == torch.bfloat16:
         rtol, atol = 3e-2, 5e-2
@@ -205,10 +208,10 @@ def test_rcps_mamba_block_wrapper(batch_size, seq_len, d_model, bidirectional, f
 @pytest.mark.parametrize("batch_size", [2, 4])
 @pytest.mark.parametrize("seq_len", [1, 1024, 2048])
 @pytest.mark.parametrize("d_model", [2, 128, 256])
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+@pytest.mark.parametrize("dtype", [torch.float32])
 def test_rcps_lm_head(batch_size, seq_len, d_model, dtype):
     # Set tolerance
-    device = torch.device("cuda")
+    device = _device()
     rtol, atol = (6e-4, 2e-3) if dtype == torch.float32 else (3e-3, 5e-3)
     if dtype == torch.bfloat16:
         rtol, atol = 3e-2, 5e-2
@@ -264,14 +267,14 @@ def test_rcps_lm_head(batch_size, seq_len, d_model, dtype):
 @pytest.mark.parametrize("seq_len", [1024, 2048])
 @pytest.mark.parametrize("n_layer", [1, 2, 3])
 @pytest.mark.parametrize("d_model", [128, 256])
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
-@pytest.mark.parametrize("fused_add_norm", [True, False])
+@pytest.mark.parametrize("dtype", [torch.float32])
+@pytest.mark.parametrize("fused_add_norm", [False])
 @pytest.mark.parametrize("bidirectional", [False, True])
 @pytest.mark.parametrize("bidirectional_weight_tie", [False, True])
 def test_rcps_backbone(batch_size, seq_len, n_layer, d_model, dtype, fused_add_norm,
                        bidirectional, bidirectional_weight_tie):
     # Set tolerance
-    device = torch.device("cuda")
+    device = _device()
     rtol, atol = (6e-4, 2e-3) if dtype == torch.float32 else (3e-3, 5e-3)
     if dtype == torch.bfloat16:
         rtol, atol = 3e-2, 5e-2
@@ -342,12 +345,12 @@ def test_rcps_backbone(batch_size, seq_len, n_layer, d_model, dtype, fused_add_n
 @pytest.mark.parametrize("seq_len", [1024, 2048])
 @pytest.mark.parametrize("n_layer", [1, 3, 4])
 @pytest.mark.parametrize("d_model", [128, 256])
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+@pytest.mark.parametrize("dtype", [torch.float32])
 @pytest.mark.parametrize("bidirectional", [False, True])
 @pytest.mark.parametrize("bidirectional_weight_tie", [False, True])
 def test_rcps_mamba_lm(batch_size, seq_len, n_layer, d_model, dtype, bidirectional, bidirectional_weight_tie):
     # Set tolerance
-    device = torch.device("cuda")
+    device = _device()
     rtol, atol = (6e-4, 2e-3) if dtype == torch.float32 else (3e-3, 5e-3)
     if dtype == torch.bfloat16:
         rtol, atol = 3e-2, 5e-2
@@ -376,7 +379,7 @@ def test_rcps_mamba_lm(batch_size, seq_len, n_layer, d_model, dtype, bidirection
         ssm_cfg=ssm_cfg,
         rms_norm=True,
         residual_in_fp32=False,
-        fused_add_norm=True,
+        fused_add_norm=False,
         pad_vocab_size_multiple=8,
         norm_epsilon=1e-5,
         initializer_cfg=initializer_cfg,
@@ -423,12 +426,12 @@ def test_rcps_mamba_lm(batch_size, seq_len, n_layer, d_model, dtype, bidirection
 @pytest.mark.parametrize("seq_len", [1024])
 @pytest.mark.parametrize("n_layer", [2])
 @pytest.mark.parametrize("d_model", [128])
-@pytest.mark.parametrize("dtype", [torch.float16])
+@pytest.mark.parametrize("dtype", [torch.float32])
 @pytest.mark.parametrize("bidirectional", [True, False])
 @pytest.mark.parametrize("bidirectional_weight_tie", [True])
 def test_collapse_invariance(batch_size, seq_len, n_layer, d_model, dtype, bidirectional, bidirectional_weight_tie):
     # Set tolerance
-    device = torch.device("cuda")
+    device = _device()
     rtol, atol = (6e-4, 2e-3) if dtype == torch.float32 else (3e-3, 5e-3)
     if dtype == torch.bfloat16:
         rtol, atol = 3e-2, 5e-2
@@ -457,7 +460,7 @@ def test_collapse_invariance(batch_size, seq_len, n_layer, d_model, dtype, bidir
         ssm_cfg=ssm_cfg,
         rms_norm=True,
         residual_in_fp32=False,
-        fused_add_norm=True,
+        fused_add_norm=False,
         pad_vocab_size_multiple=8,
         norm_epsilon=1e-5,
         initializer_cfg=initializer_cfg,

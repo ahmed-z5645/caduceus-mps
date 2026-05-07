@@ -8,23 +8,12 @@ from functools import partial
 from typing import Optional, Tuple, Union
 
 import torch
-from mamba_ssm.modules.mamba_simple import Mamba
-try:
-    from mamba_ssm.modules.mamba_simple import Block  # Legacy mambav1 file structure
-except ImportError:
-    from mamba_ssm.modules.block import Block  # mambav2 file structure
 from torch import nn
 from torch.nn import functional as F
 from transformers import PreTrainedModel
 from transformers.modeling_outputs import BaseModelOutputWithNoAttention, MaskedLMOutput, SequenceClassifierOutput
 
-try:
-    from mamba_ssm.ops.triton.layernorm import RMSNorm, layer_norm_fn, rms_norm_fn  # Legacy mambav1 file structure
-except ImportError:
-    try:
-        from mamba_ssm.ops.triton.layer_norm import RMSNorm, layer_norm_fn, rms_norm_fn  # mambav2 file structure
-    except ImportError:
-        RMSNorm, layer_norm_fn, rms_norm_fn = None, None, None
+from .mamba_pytorch import Block, Mamba, RMSNorm, layer_norm_fn, rms_norm_fn
 
 from .configuration_caduceus import CaduceusConfig
 from .modeling_rcps import RCPSAddNormWrapper, RCPSEmbedding, RCPSLMHead, RCPSMambaBlock
@@ -102,6 +91,7 @@ class BiMambaWrapper(nn.Module):
             raise NotImplementedError(f"`{bidirectional_strategy}` strategy for bi-directionality is not implemented!")
         self.bidirectional = bidirectional
         self.bidirectional_strategy = bidirectional_strategy
+        self.bidirectional_weight_tie = bidirectional_weight_tie
         self.mamba_fwd = Mamba(
             d_model=d_model,
             **mamba_kwargs
@@ -138,6 +128,28 @@ class BiMambaWrapper(nn.Module):
             else:
                 raise NotImplementedError(f"`{self.bidirectional_strategy}` for bi-directionality not implemented!")
         return out
+
+
+def _retie_bimamba_weights(model: nn.Module) -> None:
+    """Re-apply BiMambaWrapper's in/out projection weight tying.
+
+    BiMambaWrapper.__init__ ties mamba_rev's in_proj/out_proj to mamba_fwd's,
+    which is why pretrained checkpoints store only the fwd copy. transformers'
+    from_pretrained materializes parameters on the meta device and only loads
+    keys present in the checkpoint, leaving the tied mamba_rev params as
+    uninitialized (NaN) garbage. Calling this from tie_weights() restores the
+    tying after the load completes.
+    """
+    for module in model.modules():
+        if (
+            isinstance(module, BiMambaWrapper)
+            and module.mamba_rev is not None
+            and module.bidirectional_weight_tie
+        ):
+            module.mamba_rev.in_proj.weight = module.mamba_fwd.in_proj.weight
+            module.mamba_rev.in_proj.bias = module.mamba_fwd.in_proj.bias
+            module.mamba_rev.out_proj.weight = module.mamba_fwd.out_proj.weight
+            module.mamba_rev.out_proj.bias = module.mamba_fwd.out_proj.bias
 
 
 class CaduceusEmbeddings(nn.Module):
@@ -360,6 +372,10 @@ class Caduceus(CaduceusPreTrainedModel):
         factory_kwargs = {"device": device, "dtype": dtype}
         self.backbone = CaduceusMixerModel(config, **factory_kwargs, **kwargs)
 
+    def tie_weights(self):
+        super().tie_weights()
+        _retie_bimamba_weights(self)
+
     def forward(
             self,
             input_ids: torch.LongTensor = None,
@@ -437,6 +453,7 @@ class CaduceusForMaskedLM(CaduceusPreTrainedModel):
             self.lm_head.set_weight(self.get_input_embeddings().weight)
         else:
             super().tie_weights()
+        _retie_bimamba_weights(self)
 
     def get_decoder(self):
         """Get decoder (backbone) for the model."""

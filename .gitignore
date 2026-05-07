@@ -7,7 +7,10 @@ data.tar.gz
 
 .DS_Store
 .idea/
+.vscode/
 outputs/
+.venv/
+.venv-*/
 
 # slurm log files
 watch_folder/

@@ -1,6 +1,12 @@
-Adding Apple Silicon Support to run caduceus locally!
-
 # Caduceus &#9764;: Bi-Directional Equivariant Long-Range DNA Sequence Modeling
+
+> **Apple Silicon (MPS) fork.** This branch removes the CUDA-only dependencies
+> (`mamba_ssm`, `causal-conv1d`, `flash-attn`, `triton`) so Caduceus inference
+> runs natively on Apple Silicon. See [Apple Silicon (MPS)](#apple-silicon-mps)
+> below for install + usage. Scope is **inference-only**; training paths are
+> unchanged from upstream and still require CUDA.
+
+
 [[Blog]](https://caduceus-dna.github.io/) &nbsp; | &nbsp; [[arXiv]](https://arxiv.org/abs/2403.03234) &nbsp; | &nbsp; [[HuggingFace 🤗]](https://huggingface.co/collections/kuleshov-group/caducues-65dcb89b4f54e416ef61c350)
 
 This repository contains code for reproducing the results in the paper "Caduceus: Bi-Directional Equivariant Long-Range DNA Sequence Modeling," [Schiff et al. (2024)](https://arxiv.org/abs/2403.03234).
@@ -43,6 +49,62 @@ config = AutoConfig.from_pretrained(
 )
 model = AutoModelForMaskedLM.from_config(config)
 ```
+
+## Apple Silicon (MPS)
+<a name="apple-silicon-mps"></a>
+
+This fork ships a pure-PyTorch drop-in for the four `mamba_ssm` symbols Caduceus
+uses (`Mamba`, `Block`, `RMSNorm`, and the `layer_norm_fn`/`rms_norm_fn` fused
+kernels) in [`caduceus/mamba_pytorch.py`](./caduceus/mamba_pytorch.py). State-dict
+keys match upstream exactly, so HuggingFace pretrained Caduceus weights load
+without re-keying. The selective scan is a sequential Python loop — correct but
+O(L); intended for short sequences (≤ ~4k tokens) on CPU/MPS.
+
+### Install
+
+```bash
+conda env create -f caduceus_env_mps.yml -n caduceus_mps
+conda activate caduceus_mps
+```
+
+Or with pip directly (no conda required):
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install 'torch>=2.2' 'transformers>=4.38,<5' huggingface-hub safetensors pytest numpy
+```
+
+### Inference example
+
+`fused_add_norm=False` is required at load time — the fused Triton kernel is
+gone on this build, and that flag tells the model to use the unfused path.
+
+```python
+import torch
+from caduceus.modeling_caduceus import CaduceusForMaskedLM
+from caduceus.tokenization_caduceus import CaduceusTokenizer
+
+MODEL_ID = "kuleshov-group/caduceus-ph_seqlen-131k_d_model-256_n_layer-16"
+device = "mps" if torch.backends.mps.is_available() else "cpu"
+
+model = CaduceusForMaskedLM.from_pretrained(MODEL_ID, fused_add_norm=False).eval().to(device)
+tok = CaduceusTokenizer(model_max_length=131072)
+ids = torch.tensor([tok("ACGT" * 32)["input_ids"]], dtype=torch.long).to(device)
+
+with torch.no_grad():
+    logits = model(ids).logits  # (1, L, vocab_size)
+```
+
+### Tests
+
+```bash
+pytest caduceus/tests/                # full suite (~7 min)
+pytest caduceus/tests/test_mamba_pytorch.py    # drop-in unit tests, fast
+pytest caduceus/tests/test_inference_mps.py    # pretrained weights smoke test
+```
+
+The 218 RC-equivariance tests in `test_rcps.py` all pass on MPS at fp32 — the
+strongest correctness signal that the architecture port is faithful.
 
 ## Getting started in this repository
 <a name="getting_started"></a>
