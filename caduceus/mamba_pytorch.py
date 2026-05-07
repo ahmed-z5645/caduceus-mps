@@ -126,6 +126,13 @@ class Mamba(nn.Module):
         deltaA = torch.exp(torch.einsum("bld,dn->bldn", delta, A))
         deltaB_u = torch.einsum("bld,bln,bld->bldn", delta, B, x)
 
+        # Sequential scan. The closed-form parallel scan (h_t = A_t * cumsum(b_s / A_s)
+        # where A_t = cumprod(a_r)) is mathematically equivalent but numerically
+        # fragile: when deltaA is small (common at random init), A_cumprod underflows
+        # within a few positions, the b / A_cumprod division blows up, and fp32 loses
+        # precision in the re-multiplication. A robust parallel scan needs a log-space
+        # Heinsen formulation with positive/negative b splitting (logcumsumexp). Left
+        # as future work; the sequential loop is correct and tolerable for L <= ~4k.
         h = x.new_zeros(x.shape[0], d_inner, n)
         ys = []
         for i in range(x.shape[1]):
