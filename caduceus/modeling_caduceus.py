@@ -91,6 +91,7 @@ class BiMambaWrapper(nn.Module):
             raise NotImplementedError(f"`{bidirectional_strategy}` strategy for bi-directionality is not implemented!")
         self.bidirectional = bidirectional
         self.bidirectional_strategy = bidirectional_strategy
+        self.bidirectional_weight_tie = bidirectional_weight_tie
         self.mamba_fwd = Mamba(
             d_model=d_model,
             **mamba_kwargs
@@ -127,6 +128,28 @@ class BiMambaWrapper(nn.Module):
             else:
                 raise NotImplementedError(f"`{self.bidirectional_strategy}` for bi-directionality not implemented!")
         return out
+
+
+def _retie_bimamba_weights(model: nn.Module) -> None:
+    """Re-apply BiMambaWrapper's in/out projection weight tying.
+
+    BiMambaWrapper.__init__ ties mamba_rev's in_proj/out_proj to mamba_fwd's,
+    which is why pretrained checkpoints store only the fwd copy. transformers'
+    from_pretrained materializes parameters on the meta device and only loads
+    keys present in the checkpoint, leaving the tied mamba_rev params as
+    uninitialized (NaN) garbage. Calling this from tie_weights() restores the
+    tying after the load completes.
+    """
+    for module in model.modules():
+        if (
+            isinstance(module, BiMambaWrapper)
+            and module.mamba_rev is not None
+            and module.bidirectional_weight_tie
+        ):
+            module.mamba_rev.in_proj.weight = module.mamba_fwd.in_proj.weight
+            module.mamba_rev.in_proj.bias = module.mamba_fwd.in_proj.bias
+            module.mamba_rev.out_proj.weight = module.mamba_fwd.out_proj.weight
+            module.mamba_rev.out_proj.bias = module.mamba_fwd.out_proj.bias
 
 
 class CaduceusEmbeddings(nn.Module):
@@ -349,6 +372,10 @@ class Caduceus(CaduceusPreTrainedModel):
         factory_kwargs = {"device": device, "dtype": dtype}
         self.backbone = CaduceusMixerModel(config, **factory_kwargs, **kwargs)
 
+    def tie_weights(self):
+        super().tie_weights()
+        _retie_bimamba_weights(self)
+
     def forward(
             self,
             input_ids: torch.LongTensor = None,
@@ -426,6 +453,7 @@ class CaduceusForMaskedLM(CaduceusPreTrainedModel):
             self.lm_head.set_weight(self.get_input_embeddings().weight)
         else:
             super().tie_weights()
+        _retie_bimamba_weights(self)
 
     def get_decoder(self):
         """Get decoder (backbone) for the model."""
