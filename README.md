@@ -78,12 +78,19 @@ pip install 'torch>=2.2' 'transformers>=4.38,<5' huggingface-hub safetensors pyt
 
 `fused_add_norm=False` is required at load time — the fused Triton kernel is
 gone on this build, and that flag tells the model to use the unfused path.
+Both pretrained variants are supported:
+
+| Model | rcps | Verified RC-equivariance | Top-1 input recovery |
+|---|---|---|---|
+| `caduceus-ph_seqlen-131k_d_model-256_n_layer-16` | False | (n/a — Ph relies on bidir + weight-tie, not architectural) | 127/128 |
+| `caduceus-ps_seqlen-131k_d_model-256_n_layer-16` | True | < 1e-5 max abs diff in softmax (architectural) | 105/144 (RC-equivariance constrains paired probabilities) |
 
 ```python
 import torch
 from caduceus.modeling_caduceus import CaduceusForMaskedLM
 from caduceus.tokenization_caduceus import CaduceusTokenizer
 
+# Either Ph (rcps=False) or PS (rcps=True) — fused_add_norm=False handles both.
 MODEL_ID = "kuleshov-group/caduceus-ph_seqlen-131k_d_model-256_n_layer-16"
 device = "mps" if torch.backends.mps.is_available() else "cpu"
 
@@ -94,6 +101,13 @@ ids = torch.tensor([tok("ACGT" * 32)["input_ids"]], dtype=torch.long).to(device)
 with torch.no_grad():
     logits = model(ids).logits  # (1, L, vocab_size)
 ```
+
+For Caduceus-PS specifically: the checkpoint was trained with `fused_add_norm=True`,
+which keeps `self.norm = norm_f` directly. Forcing `fused_add_norm=False` on this
+build wraps norms in `RCPSAddNormWrapper`, shifting state-dict keys from
+`norm.weight` to `norm.submodule.weight`. The `from_pretrained` override on
+`CaduceusPreTrainedModel` patches this transparently by re-loading the affected
+weights from the checkpoint after transformers' loader runs.
 
 ### Tests
 

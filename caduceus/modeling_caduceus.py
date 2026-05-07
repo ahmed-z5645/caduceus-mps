@@ -313,6 +313,48 @@ class CaduceusPreTrainedModel(PreTrainedModel):
     supports_gradient_checkpointing = False
     _no_split_modules = ["BiMambaWrapper"]
 
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
+        model = super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+        # Caduceus-PS (rcps=True) was trained with fused_add_norm=True, which makes
+        # `self.norm = norm_f` directly. When we override fused_add_norm=False on this
+        # build (the Triton fused kernels are gone on MPS), the structure becomes
+        # `self.norm = RCPSAddNormWrapper(norm_f)` and the checkpoint's `norm.weight`
+        # keys no longer match the model's `norm.submodule.weight` keys. transformers'
+        # loader silently leaves those wrapper params at their (uninitialized) init,
+        # which zeros out activations downstream. Patch them back from the checkpoint.
+        if model.config.rcps and not model.config.fused_add_norm:
+            cls._patch_rcps_norm_weights(model, pretrained_model_name_or_path)
+        return model
+
+    @staticmethod
+    def _patch_rcps_norm_weights(model, model_id_or_path):
+        import os
+        from huggingface_hub import hf_hub_download
+        from safetensors.torch import load_file
+
+        if os.path.isdir(model_id_or_path):
+            sd_path = os.path.join(model_id_or_path, "model.safetensors")
+            if not os.path.exists(sd_path):
+                return  # No safetensors locally; bin format not supported here
+        else:
+            try:
+                sd_path = hf_hub_download(model_id_or_path, "model.safetensors")
+            except Exception:
+                return
+
+        state_dict = load_file(sd_path)
+        with torch.no_grad():
+            for k, v in state_dict.items():
+                if not (k.endswith(".norm.weight") or k.endswith(".norm_f.weight")):
+                    continue
+                target_key = k[: -len(".weight")] + ".submodule.weight"
+                # Walk the module tree to the target parameter.
+                obj = model
+                for part in target_key.split(".")[:-1]:
+                    obj = obj[int(part)] if part.isdigit() else getattr(obj, part)
+                getattr(obj, target_key.split(".")[-1]).data.copy_(v)
+
     def _init_weights(
             self,
             module,
