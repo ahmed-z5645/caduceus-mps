@@ -1,0 +1,2 @@
+task,model,fold,best_val_acc,epochs,lr,head_batch,seed,frozen_backbone
+human_or_worm,ph,0,1.000000,3,0.001,512,2222,True
